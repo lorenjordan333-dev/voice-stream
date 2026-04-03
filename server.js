@@ -22,7 +22,6 @@ wss.on("connection", (ws) => {
   openaiWs.on("open", () => {
     console.log("🤖 OpenAI connected");
 
-    // session config
     openaiWs.send(JSON.stringify({
       type: "session.update",
       session: {
@@ -32,7 +31,6 @@ wss.on("connection", (ws) => {
       }
     }));
 
-    // 🔥 IMPORTANT: force first response (no silence)
     openaiWs.send(JSON.stringify({
       type: "response.create",
       response: {
@@ -40,25 +38,6 @@ wss.on("connection", (ws) => {
         instructions: "Say: Hello, how can I help you?"
       }
     }));
-  });
-
-  openaiWs.on("message", (message) => {
-    let data;
-    try {
-      data = JSON.parse(message);
-    } catch {
-      return;
-    }
-
-    // 🔥 SEND AUDIO BACK TO TWILIO
-    if (data.type === "response.audio.delta") {
-      ws.send(JSON.stringify({
-        event: "media",
-        media: {
-          payload: data.delta
-        }
-      }));
-    }
   });
 
   openaiWs.on("error", (err) => {
@@ -71,6 +50,7 @@ wss.on("connection", (ws) => {
 
   ws.on("message", (message) => {
     let data;
+
     try {
       data = JSON.parse(message);
     } catch {
@@ -87,12 +67,26 @@ wss.on("connection", (ws) => {
           type: "input_audio_buffer.append",
           audio: data.media.payload
         }));
-
-        // 🔥 CRITICAL: commit audio immediately
-        openaiWs.send(JSON.stringify({
-          type: "input_audio_buffer.commit"
-        }));
       }
+    }
+  });
+
+  openaiWs.on("message", (message) => {
+    let data;
+
+    try {
+      data = JSON.parse(message);
+    } catch {
+      return;
+    }
+
+    if (data.type === "response.audio.delta") {
+      ws.send(JSON.stringify({
+        event: "media",
+        media: {
+          payload: data.delta
+        }
+      }));
     }
   });
 
