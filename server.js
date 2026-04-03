@@ -87,6 +87,7 @@ wss.on("connection", (ws) => {
       ws.send(
         JSON.stringify({
           event: "media",
+          streamSid: streamSid,
           media: {
             payload: data.delta,
           },
