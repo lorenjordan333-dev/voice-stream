@@ -84,7 +84,7 @@ wss.on("connection", (ws) => {
           type: "response.create",
           response: {
             modalities: ["audio"],
-            instructions: "Say: Hello, how can I help you?",
+            instructions: "Say exactly: Locksmith services, hi, this is Kelly, how can I help?",
           },
         })
       );
