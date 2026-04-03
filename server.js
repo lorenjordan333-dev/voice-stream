@@ -30,14 +30,6 @@ wss.on("connection", (ws) => {
         voice: "alloy"
       }
     }));
-
-    openaiWs.send(JSON.stringify({
-      type: "response.create",
-      response: {
-        modalities: ["audio"],
-        instructions: "Say: Hello, how can I help you?"
-      }
-    }));
   });
 
   openaiWs.on("error", (err) => {
@@ -78,6 +70,17 @@ wss.on("connection", (ws) => {
       data = JSON.parse(message);
     } catch {
       return;
+    }
+
+    if (data.type === "session.updated") {
+      console.log("✅ Session ready, triggering greeting");
+      openaiWs.send(JSON.stringify({
+        type: "response.create",
+        response: {
+          modalities: ["audio"],
+          instructions: "Say: Hello, how can I help you?"
+        }
+      }));
     }
 
     if (data.type === "response.audio.delta") {
