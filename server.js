@@ -22,6 +22,7 @@ wss.on("connection", (ws) => {
   openaiWs.on("open", () => {
     console.log("🤖 OpenAI connected");
 
+    // Setup session
     openaiWs.send(
       JSON.stringify({
         type: "session.update",
@@ -30,6 +31,17 @@ wss.on("connection", (ws) => {
           input_audio_format: "g711_ulaw",
           output_audio_format: "g711_ulaw",
           voice: "alloy",
+        },
+      })
+    );
+
+    // 🔥 Force first response (so you hear something)
+    openaiWs.send(
+      JSON.stringify({
+        type: "response.create",
+        response: {
+          modalities: ["audio"],
+          instructions: "Say: Hello, how can I help you?",
         },
       })
     );
@@ -42,7 +54,7 @@ wss.on("connection", (ws) => {
     try {
       data = JSON.parse(message);
     } catch (e) {
-      return; // ignore non-JSON (prevents crash)
+      return;
     }
 
     if (data.event === "start") {
@@ -61,7 +73,7 @@ wss.on("connection", (ws) => {
     }
   });
 
-  // 👉 FROM OPENAI → TWILIO (AUDIO BACK 🔥)
+  // 👉 FROM OPENAI → TWILIO (SEND AUDIO BACK 🔥)
   openaiWs.on("message", (message) => {
     let data;
 
