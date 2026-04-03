@@ -9,6 +9,8 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 wss.on("connection", (ws) => {
   console.log("📞 Twilio connected");
 
+  let streamSid = null; // ✅ added
+
   const openaiWs = new WebSocket(
     "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
     {
@@ -22,7 +24,6 @@ wss.on("connection", (ws) => {
   openaiWs.on("open", () => {
     console.log("🤖 OpenAI connected");
 
-    // Setup session
     openaiWs.send(
       JSON.stringify({
         type: "session.update",
@@ -34,17 +35,6 @@ wss.on("connection", (ws) => {
         },
       })
     );
-
-    // 🔥 Force first response (so you hear something)
-    openaiWs.send(
-      JSON.stringify({
-        type: "response.create",
-        response: {
-          modalities: ["audio"],
-          instructions: "Say: Hello, how can I help you?",
-        },
-      })
-    );
   });
 
   // 👉 FROM TWILIO → OPENAI
@@ -52,13 +42,15 @@ wss.on("connection", (ws) => {
     let data;
 
     try {
-      data = JSON.parse(message);
+      data = JSON.parse(message.toString());
     } catch (e) {
       return;
     }
 
     if (data.event === "start") {
-      console.log("▶️ Stream started");
+      streamSid = data.start.streamSid; // ✅ added
+      console.log("▶️ Stream started:", streamSid);
+      return;
     }
 
     if (data.event === "media") {
@@ -73,17 +65,34 @@ wss.on("connection", (ws) => {
     }
   });
 
-  // 👉 FROM OPENAI → TWILIO (SEND AUDIO BACK 🔥)
+  // 👉 FROM OPENAI → TWILIO
   openaiWs.on("message", (message) => {
     let data;
 
     try {
-      data = JSON.parse(message);
+      data = JSON.parse(message.toString());
     } catch (e) {
       return;
     }
 
-    if (data.type === "response.audio.delta" && data.delta) {
+    // ✅ wait until session is really ready, then force first response
+    if (data.type === "session.created") {
+      console.log("✅ session ready");
+
+      openaiWs.send(
+        JSON.stringify({
+          type: "response.create",
+          response: {
+            modalities: ["audio"],
+            instructions: "Say: Hello, how can I help you?",
+          },
+        })
+      );
+
+      return;
+    }
+
+    if (data.type === "response.audio.delta" && data.delta && streamSid) {
       ws.send(
         JSON.stringify({
           event: "media",
