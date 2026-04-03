@@ -1,92 +1,128 @@
-const WebSocket = require("ws");
+const express = require("express");
 const http = require("http");
+const WebSocket = require("ws");
+require("dotenv").config();
 
-const server = http.createServer();
-const wss = new WebSocket.Server({ server });
+const app = express();
+const server = http.createServer(app);
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+// IMPORTANT: /stream path
+const wss = new WebSocket.Server({ server, path: "/stream" });
 
 wss.on("connection", (ws) => {
   console.log("📞 Twilio connected");
+
+  let streamSid = null;
+  let openaiReady = false;
+  let silenceTimer = null;
+  let hasAudio = false;
+  let lastAiEndTime = 0;
 
   const openaiWs = new WebSocket(
     "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17",
     {
       headers: {
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         "OpenAI-Beta": "realtime=v1",
       },
     }
   );
 
+  // --- OPENAI CONNECT ---
   openaiWs.on("open", () => {
     console.log("🤖 OpenAI connected");
 
     openaiWs.send(JSON.stringify({
       type: "session.update",
       session: {
+        voice: "marin",
         input_audio_format: "g711_ulaw",
         output_audio_format: "g711_ulaw",
-        voice: "alloy"
-      }
-    }));
-
-    openaiWs.send(JSON.stringify({
-      type: "response.create",
-      response: {
-        modalities: ["audio"],
-        instructions: "Say: Hello, how can I help you?"
+        input_audio_transcription: {
+          model: "gpt-4o-mini-transcribe"
+        }
       }
     }));
   });
 
-  openaiWs.on("error", (err) => {
-    console.log("❌ OpenAI error:", err.message);
-  });
-
-  openaiWs.on("close", () => {
-    console.log("❌ OpenAI disconnected");
-  });
-
-  ws.on("message", (message) => {
+  // --- OPENAI MESSAGES ---
+  openaiWs.on("message", (msg) => {
     let data;
+    try { data = JSON.parse(msg.toString()); } catch { return; }
 
-    try {
-      data = JSON.parse(message);
-    } catch {
+    // 🔥 SESSION READY → SEND FIRST RESPONSE
+    if (data.type === "session.created") {
+      openaiReady = true;
+
+      openaiWs.send(JSON.stringify({
+        type: "response.create",
+        response: {
+          modalities: ["audio"],
+          instructions: "Say: Hello, this is Kelly, how can I help you?"
+        }
+      }));
       return;
     }
 
-    if (data.event === "start") {
-      console.log("▶️ Stream started");
-    }
-
-    if (data.event === "media") {
-      if (openaiWs.readyState === WebSocket.OPEN) {
-        openaiWs.send(JSON.stringify({
-          type: "input_audio_buffer.append",
-          audio: data.media.payload
-        }));
-      }
-    }
-  });
-
-  openaiWs.on("message", (message) => {
-    let data;
-
-    try {
-      data = JSON.parse(message);
-    } catch {
-      return;
-    }
-
-    if (data.type === "response.audio.delta") {
+    // 🔥 SEND AUDIO BACK TO TWILIO (THIS WAS MISSING)
+    if (data.type === "response.audio.delta" && streamSid) {
       ws.send(JSON.stringify({
         event: "media",
+        streamSid: streamSid,
         media: {
           payload: data.delta
         }
       }));
+    }
+
+    if (data.type === "response.completed") {
+      lastAiEndTime = Date.now();
+    }
+  });
+
+  // --- TWILIO MESSAGES ---
+  ws.on("message", (msg) => {
+    let data;
+    try { data = JSON.parse(msg.toString()); } catch { return; }
+
+    if (data.event === "start") {
+      streamSid = data.start.streamSid;
+      console.log("▶️ Stream started:", streamSid);
+      return;
+    }
+
+    if (data.event === "media") {
+      const payload = data.media?.payload;
+      if (!payload) return;
+
+      if (payload.length > 200) {
+        hasAudio = true;
+      }
+
+      if (!openaiReady) return;
+
+      openaiWs.send(JSON.stringify({
+        type: "input_audio_buffer.append",
+        audio: payload
+      }));
+
+      if (silenceTimer) clearTimeout(silenceTimer);
+
+      silenceTimer = setTimeout(() => {
+        if (!hasAudio) return;
+        if (Date.now() - lastAiEndTime < 800) return;
+
+        openaiWs.send(JSON.stringify({
+          type: "input_audio_buffer.commit"
+        }));
+
+        openaiWs.send(JSON.stringify({
+          type: "response.create"
+        }));
+
+        hasAudio = false;
+
+      }, 400);
     }
   });
 
@@ -94,10 +130,14 @@ wss.on("connection", (ws) => {
     console.log("❌ Twilio disconnected");
     openaiWs.close();
   });
+
+  openaiWs.on("close", () => {
+    console.log("❌ OpenAI disconnected");
+    ws.close();
+  });
 });
 
-const PORT = process.env.PORT || 8080;
-
+const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log("voice-stream running on port " + PORT);
+  console.log("🚀 voice-stream running on port " + PORT);
 });
