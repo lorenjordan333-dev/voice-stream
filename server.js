@@ -13,7 +13,7 @@ wss.on("connection", (ws) => {
     "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
     {
       headers: {
-        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
         "OpenAI-Beta": "realtime=v1",
       },
     }
@@ -22,45 +22,64 @@ wss.on("connection", (ws) => {
   openaiWs.on("open", () => {
     console.log("🤖 OpenAI connected");
 
-    // Start session
-    openaiWs.send(JSON.stringify({
-      type: "session.update",
-      session: {
-        turn_detection: { type: "server_vad" },
-        input_audio_format: "g711_ulaw",
-        output_audio_format: "g711_ulaw",
-        voice: "alloy"
-      }
-    }));
+    openaiWs.send(
+      JSON.stringify({
+        type: "session.update",
+        session: {
+          turn_detection: { type: "server_vad" },
+          input_audio_format: "g711_ulaw",
+          output_audio_format: "g711_ulaw",
+          voice: "alloy",
+        },
+      })
+    );
   });
 
-  // 👉 FROM TWILIO → TO OPENAI
+  // 👉 FROM TWILIO → OPENAI
   ws.on("message", (message) => {
-    const data = JSON.parse(message);
+    let data;
 
-    if (data.event === "media") {
-      openaiWs.send(JSON.stringify({
-        type: "input_audio_buffer.append",
-        audio: data.media.payload
-      }));
+    try {
+      data = JSON.parse(message);
+    } catch (e) {
+      return; // ignore non-JSON (prevents crash)
     }
 
     if (data.event === "start") {
       console.log("▶️ Stream started");
     }
+
+    if (data.event === "media") {
+      if (openaiWs.readyState === WebSocket.OPEN) {
+        openaiWs.send(
+          JSON.stringify({
+            type: "input_audio_buffer.append",
+            audio: data.media.payload,
+          })
+        );
+      }
+    }
   });
 
-  // 👉 FROM OPENAI → TO TWILIO (THIS WAS MISSING 🔥)
+  // 👉 FROM OPENAI → TWILIO (AUDIO BACK 🔥)
   openaiWs.on("message", (message) => {
-    const data = JSON.parse(message);
+    let data;
+
+    try {
+      data = JSON.parse(message);
+    } catch (e) {
+      return;
+    }
 
     if (data.type === "response.audio.delta" && data.delta) {
-      ws.send(JSON.stringify({
-        event: "media",
-        media: {
-          payload: data.delta
-        }
-      }));
+      ws.send(
+        JSON.stringify({
+          event: "media",
+          media: {
+            payload: data.delta,
+          },
+        })
+      );
     }
   });
 
@@ -71,6 +90,10 @@ wss.on("connection", (ws) => {
 
   openaiWs.on("close", () => {
     console.log("❌ OpenAI disconnected");
+  });
+
+  openaiWs.on("error", (err) => {
+    console.error("OpenAI error:", err.message);
   });
 });
 
