@@ -9,7 +9,9 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 wss.on("connection", (ws) => {
   console.log("📞 Twilio connected");
 
-  let streamSid = null; // ✅ added
+  let streamSid = null;
+  let openaiReady = false;
+  let greetingSent = false;
 
   const openaiWs = new WebSocket(
     "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview",
@@ -20,6 +22,23 @@ wss.on("connection", (ws) => {
       },
     }
   );
+
+  function trySendGreeting() {
+    if (!openaiReady || !streamSid || greetingSent) return;
+
+    greetingSent = true;
+
+    openaiWs.send(
+      JSON.stringify({
+        type: "response.create",
+        response: {
+          modalities: ["audio"],
+          instructions:
+            "Say exactly: Locksmith services, hi, this is Kelly, how can I help?",
+        },
+      })
+    );
+  }
 
   openaiWs.on("open", () => {
     console.log("🤖 OpenAI connected");
@@ -48,8 +67,9 @@ wss.on("connection", (ws) => {
     }
 
     if (data.event === "start") {
-      streamSid = data.start.streamSid; // ✅ added
+      streamSid = data.start.streamSid;
       console.log("▶️ Stream started:", streamSid);
+      trySendGreeting();
       return;
     }
 
@@ -75,20 +95,10 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    // ✅ wait until session is really ready, then force first response
     if (data.type === "session.created") {
       console.log("✅ session ready");
-
-      openaiWs.send(
-        JSON.stringify({
-          type: "response.create",
-          response: {
-            modalities: ["audio"],
-            instructions: "Say exactly: Locksmith services, hi, this is Kelly, how can I help?",
-          },
-        })
-      );
-
+      openaiReady = true;
+      trySendGreeting();
       return;
     }
 
