@@ -1,13 +1,25 @@
-const WebSocket = require("ws");
+const express = require("express");
 const http = require("http");
+const WebSocket = require("ws");
 
-const server = http.createServer();
-const wss = new WebSocket.Server({ server });
+const app = express();
+app.get("/", (_req, res) => {
+  res.send("voice-stream alive");
+});
+
+const server = http.createServer(app);
+
+// IMPORTANT: path must match your Twilio <Stream url=".../stream" />
+const wss = new WebSocket.Server({ server, path: "/stream" });
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-wss.on("connection", (ws) => {
+wss.on("connection", (twilioWs) => {
   console.log("📞 Twilio connected");
+
+  let streamSid = null;
+  let openaiReady = false;
+  let greetingSent = false;
 
   const openaiWs = new WebSocket(
     "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17",
@@ -19,45 +31,67 @@ wss.on("connection", (ws) => {
     }
   );
 
+  function trySendGreeting() {
+    if (!openaiReady || !streamSid || greetingSent) return;
+
+    greetingSent = true;
+
+    openaiWs.send(
+      JSON.stringify({
+        type: "response.create",
+        response: {
+          modalities: ["audio"],
+          instructions: "Say: Hello, how can I help you?",
+        },
+      })
+    );
+  }
+
   openaiWs.on("open", () => {
     console.log("🤖 OpenAI connected");
 
-    // session config
-    openaiWs.send(JSON.stringify({
-      type: "session.update",
-      session: {
-        input_audio_format: "g711_ulaw",
-        output_audio_format: "g711_ulaw",
-        voice: "alloy"
-      }
-    }));
-
-    // 🔥 IMPORTANT: force first response (no silence)
-    openaiWs.send(JSON.stringify({
-      type: "response.create",
-      response: {
-        modalities: ["audio"],
-        instructions: "Say: Hello, how can I help you?"
-      }
-    }));
+    openaiWs.send(
+      JSON.stringify({
+        type: "session.update",
+        session: {
+          input_audio_format: "g711_ulaw",
+          output_audio_format: "g711_ulaw",
+          voice: "alloy",
+        },
+      })
+    );
   });
 
   openaiWs.on("message", (message) => {
     let data;
     try {
-      data = JSON.parse(message);
+      data = JSON.parse(message.toString());
     } catch {
       return;
     }
 
-    // 🔥 SEND AUDIO BACK TO TWILIO
-    if (data.type === "response.audio.delta") {
-      ws.send(JSON.stringify({
-        event: "media",
-        media: {
-          payload: data.delta
-        }
-      }));
+    if (data.type === "session.created") {
+      console.log("✅ OpenAI session created");
+      openaiReady = true;
+      trySendGreeting();
+      return;
+    }
+
+    if (data.type === "response.audio.delta" && data.delta && streamSid) {
+      twilioWs.send(
+        JSON.stringify({
+          event: "media",
+          streamSid,
+          media: {
+            payload: data.delta,
+          },
+        })
+      );
+      return;
+    }
+
+    if (data.type === "error") {
+      console.log("❌ OpenAI error:", JSON.stringify(data));
     }
   });
 
@@ -67,38 +101,53 @@ wss.on("connection", (ws) => {
 
   openaiWs.on("close", () => {
     console.log("❌ OpenAI disconnected");
+    if (twilioWs.readyState === WebSocket.OPEN) {
+      twilioWs.close();
+    }
   });
 
-  ws.on("message", (message) => {
+  twilioWs.on("message", (message) => {
     let data;
     try {
-      data = JSON.parse(message);
+      data = JSON.parse(message.toString());
     } catch {
       return;
     }
 
     if (data.event === "start") {
-      console.log("▶️ Stream started");
+      streamSid = data.start?.streamSid || null;
+      console.log("▶️ Stream started", streamSid);
+      trySendGreeting();
+      return;
     }
 
     if (data.event === "media") {
-      if (openaiWs.readyState === WebSocket.OPEN) {
-        openaiWs.send(JSON.stringify({
-          type: "input_audio_buffer.append",
-          audio: data.media.payload
-        }));
+      if (!data.media?.payload) return;
+      if (openaiWs.readyState !== WebSocket.OPEN) return;
 
-        // 🔥 CRITICAL: commit audio immediately
-        openaiWs.send(JSON.stringify({
-          type: "input_audio_buffer.commit"
-        }));
-      }
+      openaiWs.send(
+        JSON.stringify({
+          type: "input_audio_buffer.append",
+          audio: data.media.payload,
+        })
+      );
+      return;
+    }
+
+    if (data.event === "stop") {
+      console.log("🛑 Twilio stream stopped");
     }
   });
 
-  ws.on("close", () => {
+  twilioWs.on("close", () => {
     console.log("❌ Twilio disconnected");
-    openaiWs.close();
+    if (openaiWs.readyState === WebSocket.OPEN) {
+      openaiWs.close();
+    }
+  });
+
+  twilioWs.on("error", (err) => {
+    console.log("❌ Twilio error:", err.message);
   });
 });
 
